@@ -403,7 +403,8 @@ run_dashboard() {
   local pane_path="$2"
   local current_branch="$3"
   local show_path="$4"
-  local result action query selected_type selected_name selected_branch selected_path confirm
+  local result action query selected_type selected_name selected_branch selected_path
+  local suppress_enter_once
   local git_err
 
   if ! has_fzf; then
@@ -412,6 +413,7 @@ run_dashboard() {
   fi
 
   query=""
+  suppress_enter_once=0
   while :; do
     result="$(dashboard_pick_action "$repo_root" "$show_path" "$query")"
     if [[ -z "$result" ]]; then
@@ -426,38 +428,40 @@ run_dashboard() {
     case "$action" in
       ctrl-p)
         show_path="$(toggle_worktree_show_path_setting)"
+        suppress_enter_once=1
         ;;
       ctrl-d)
         if [[ "$selected_type" != "worktree" || -z "$selected_path" ]]; then
           tmux display-message "Select a worktree to delete"
+          suppress_enter_once=1
           continue
         fi
 
         if [[ "$selected_path" == "$repo_root" ]]; then
           tmux display-message "Cannot delete the main repository worktree"
+          suppress_enter_once=1
           continue
         fi
 
         if [[ "$pane_path" == "$selected_path" || "$pane_path" == "$selected_path"/* ]]; then
           tmux display-message "Cannot delete current worktree from inside it"
-          continue
-        fi
-
-        read -r -p "Delete worktree '$selected_name' [$selected_branch]? [y/N]: " confirm
-        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+          suppress_enter_once=1
           continue
         fi
 
         if ! git_err="$(git -C "$repo_root" worktree remove "$selected_path" 2>&1)"; then
           show_git_error "$git_err"
+          suppress_enter_once=1
           continue
         fi
 
-        tmux display-message "Deleted worktree: $selected_name"
+        query=""
+        suppress_enter_once=1
         ;;
       ctrl-n)
         if [[ -z "${query//[[:space:]]/}" ]]; then
           tmux display-message "Type a branch name to create/open"
+          suppress_enter_once=1
           continue
         fi
 
@@ -465,6 +469,11 @@ run_dashboard() {
         return $?
         ;;
       enter)
+        if [[ "$suppress_enter_once" == "1" ]]; then
+          suppress_enter_once=0
+          continue
+        fi
+
         if [[ "$selected_type" == "worktree" && -n "$selected_path" ]]; then
           open_worktree_window "$selected_path"
           return $?
