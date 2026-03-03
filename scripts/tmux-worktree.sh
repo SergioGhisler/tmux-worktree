@@ -496,8 +496,19 @@ run_dashboard() {
 open_worktree_window() {
   local worktree_path="$1"
   local window_name
+  local existing_window
 
   window_name="$(basename "$worktree_path")"
+
+  # Check if a tmux window already exists for this worktree path
+  existing_window="$(tmux list-windows -F '#{window_index} #{pane_current_path}' \
+    | awk -v path="$worktree_path" '$2 == path { print $1; exit }')"
+
+  if [[ -n "$existing_window" ]]; then
+    tmux select-window -t "$existing_window"
+    return 0
+  fi
+
   if ! tmux new-window -n "$window_name" -c "$worktree_path"; then
     tmux display-message "Failed to open tmux window '$window_name'"
     return 1
