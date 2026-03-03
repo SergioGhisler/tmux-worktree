@@ -1,8 +1,8 @@
 # tmux-worktree
 
-A tmux plugin to create and switch to git worktrees from a floating popup, powered by fzf.
+A tmux plugin to create, list, switch to, and delete git worktrees from a single floating popup, powered by fzf.
 
-Press the bind key to open a popup where you can type a branch name. If the branch exists, a worktree for it is created (or reused) and opened in a new window. If it doesn't exist, you're prompted to pick a base branch and a new branch + worktree are created together.
+Press the main bind key to open a dashboard popup. From there you can open an existing worktree, create one from your query, delete one, and toggle the path column.
 
 Worktrees are placed in a `<repo>-worktrees/` directory next to your repo root, keeping your workspace tidy.
 
@@ -39,11 +39,16 @@ run '~/.config/tmux/plugins/tmux-worktree/worktree.tmux'
 ## Usage
 
 1. Open any tmux pane inside a git repository
-2. Press `prefix + w` (or your configured bind)
-3. Type a branch name in the popup:
-   - If the branch **exists**: a worktree for it is created and opened
-   - If it **doesn't exist**: you'll be prompted to pick a base branch, then the new branch + worktree are created
-4. A new tmux window opens at the worktree path
+2. Press `prefix + w` (or your configured `@worktree-bind`) to open the dashboard
+3. In the dashboard popup:
+   - Your current query is always shown as the first `new` row
+   - Existing worktrees stay visible in the list while you type
+   - `Enter`: open selected worktree (or create/open from query if nothing selected)
+   - `Ctrl-N`: create/open from current query
+   - `Ctrl-D`: delete selected linked worktree
+   - `Ctrl-P`: toggle PATH column on/off
+4. Shortcuts are shown in a dedicated hint line at the very bottom of the popup
+5. A new tmux window opens at the worktree path
 
 Worktrees are created at `../<repo>-worktrees/<branch-name>/` relative to the repo root.
 
@@ -53,15 +58,17 @@ All options are optional. Defaults are shown below.
 
 ```tmux
 set -g @worktree-bind 'w'                  # key to trigger the popup (with prefix)
-set -g @worktree-popup-width '60%'         # popup width
-set -g @worktree-popup-height '20%'        # popup height
-set -g @worktree-popup-title 'Create Worktree'  # popup border title
+set -g @worktree-popup-width '80%'         # popup width (minimum effective: 70%)
+set -g @worktree-popup-height '70%'        # popup height (minimum effective: 55%)
+set -g @worktree-popup-title 'Worktrees'   # popup border title
+set -g @worktree-show-path 'on'            # show PATH column in dashboard (on/off)
 ```
 
 ## How it works
 
 - **Existing branch**: runs `git worktree add <path> <branch>` and opens the result
-- **New branch**: asks for a base branch, runs `git worktree add -b <branch> <path> <base>`, opens the result
+- **New branch**: in dashboard mode, runs `git worktree add -b <branch> <path> <current-branch>`
+- **Dashboard mode**: one popup for open/create/delete actions with keyboard shortcuts
 - **Already checked out**: if the branch already has a worktree, switches to its existing path instead of creating a duplicate
 - **Collision handling**: if a path is already used by a different branch, a numbered suffix (`-2`, `-3`, ...) is tried
 
