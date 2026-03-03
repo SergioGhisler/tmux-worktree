@@ -351,10 +351,13 @@ dashboard_candidates_for_query() {
   local wt_name wt_branch wt_path
   local short_name short_branch short_path display_line
   local name_col_width branch_col_width path_col_width
+  local query_lower name_lower branch_lower path_lower
 
   name_col_width=24
   branch_col_width=20
   path_col_width=56
+  query="$(trim_name "$query")"
+  query_lower="${query,,}"
 
   if [[ -n "$query" ]]; then
     short_name="$(truncate_for_column "$query" "$name_col_width")"
@@ -372,6 +375,16 @@ dashboard_candidates_for_query() {
   fi
 
   while IFS=$'\t' read -r wt_name wt_branch wt_path; do
+    if [[ -n "$query_lower" ]]; then
+      name_lower="${wt_name,,}"
+      branch_lower="${wt_branch,,}"
+      path_lower="${wt_path,,}"
+
+      if [[ "$name_lower" != *"$query_lower"* && "$branch_lower" != *"$query_lower"* && "$path_lower" != *"$query_lower"* ]]; then
+        continue
+      fi
+    fi
+
     short_name="$(truncate_for_column "$wt_name" "$name_col_width")"
     short_branch="$(truncate_for_column "$wt_branch" "$branch_col_width")"
     if [[ "$show_path" == "1" ]]; then
