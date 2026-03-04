@@ -329,7 +329,7 @@ run_dashboard() {
   local current_branch="$3"
   local result action query selected_type selected_name selected_branch selected_path
   local suppress_enter_once
-  local git_err
+  local git_err confirm
 
   if ! has_fzf; then
     tmux display-message "Dashboard mode requires fzf"
@@ -365,6 +365,12 @@ run_dashboard() {
 
         if [[ "$pane_path" == "$selected_path" || "$pane_path" == "$selected_path"/* ]]; then
           tmux display-message "Cannot delete current worktree from inside it"
+          suppress_enter_once=1
+          continue
+        fi
+
+        read -r -p "Delete worktree '$selected_name' [$selected_branch]? [y/N]: " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
           suppress_enter_once=1
           continue
         fi
