@@ -79,6 +79,41 @@ show_git_error() {
   tmux display-message "$message"
 }
 
+maybe_delete_local_branch() {
+  local repo_root="$1"
+  local branch_name="$2"
+  local confirm force_confirm git_err
+
+  if [[ -z "$branch_name" || "$branch_name" == "detached" ]]; then
+    return 0
+  fi
+
+  if ! branch_exists "$repo_root" "$branch_name"; then
+    return 0
+  fi
+
+  read -r -p "Also delete local branch '$branch_name'? [y/N]: " confirm
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    return 0
+  fi
+
+  if git_err="$(git -C "$repo_root" branch -d "$branch_name" 2>&1)"; then
+    return 0
+  fi
+
+  read -r -p "Branch '$branch_name' is not merged. Force delete? [y/N]: " force_confirm
+  if [[ ! "$force_confirm" =~ ^[Yy]$ ]]; then
+    show_git_error "$git_err"
+    return 0
+  fi
+
+  if ! git_err="$(git -C "$repo_root" branch -D "$branch_name" 2>&1)"; then
+    show_git_error "$git_err"
+    return 0
+  fi
+
+}
+
 has_fzf() {
   command -v fzf >/dev/null 2>&1
 }
@@ -476,6 +511,8 @@ run_dashboard() {
           continue
         fi
 
+        maybe_delete_local_branch "$repo_root" "$selected_branch"
+
         query=""
         ;;
       enter)
@@ -825,6 +862,8 @@ main() {
       show_git_error "$git_err"
       exit 1
     fi
+
+    maybe_delete_local_branch "$repo_root" "$selected_branch"
 
     tmux display-message "Deleted worktree: $selected_name"
     exit 0

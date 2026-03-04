@@ -45,7 +45,7 @@ run '~/.config/tmux/plugins/tmux-worktree/worktree.tmux'
     - Use `]` and `[` to cycle lists: worktrees -> local branches -> remote branches
     - The header shows the active list mode in brackets (for example: `MODE: [WORKTREES] - local - remote`)
     - `Enter`: open selected worktree (or create/open from query if nothing selected)
-    - `Ctrl-D`: delete selected linked worktree
+    - `Ctrl-D`: delete selected linked worktree (with optional local branch deletion)
     - When creating a new branch, a second picker asks for the base branch and marks each option as `local` or `remote`
     - Press `Esc` in that second picker to go back to the dashboard without creating anything
 4. Shortcuts are shown in a dedicated hint line at the very bottom of the popup
