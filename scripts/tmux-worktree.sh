@@ -212,6 +212,7 @@ select_worktree_row() {
 dashboard_pick_action() {
   local repo_root="$1"
   local query="${2:-}"
+  local show_branches="${3:-0}"
   local script_path_q repo_root_q reload_cmd
   local fzf_output key selected_line type wt_name wt_branch wt_path
   local line_count show_bottom_legend
@@ -219,7 +220,7 @@ dashboard_pick_action() {
 
   script_path_q="$(printf "%q" "${BASH_SOURCE[0]}")"
   repo_root_q="$(printf "%q" "$repo_root")"
-  reload_cmd="$script_path_q --dashboard-candidates $repo_root_q {q}"
+  reload_cmd="$script_path_q --dashboard-candidates $repo_root_q {q} $show_branches"
   line_count="${LINES:-0}"
   show_bottom_legend=1
   if (( line_count > 0 && line_count < 10 )); then
@@ -227,12 +228,12 @@ dashboard_pick_action() {
   fi
 
   if (( show_bottom_legend == 1 )); then
-    if ! fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,ctrl-n --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt='Worktrees> ' --header='NAME                                               BRANCH' --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,ctrl-n:accept' --preview='printf "enter open/create | ctrl-n create | ctrl-d delete\n"' --preview-window='down:1:nowrap')"; then
+    if ! fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,tab --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt='Worktrees> ' --header='NAME                                               BRANCH' --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,tab:accept' --preview='printf "enter open/create | ctrl-d delete | tab branches\n"' --preview-window='down:1:nowrap')"; then
       printf ""
       return
     fi
   else
-    if ! fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,ctrl-n --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt='Worktrees> ' --header='NAME                                               BRANCH' --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,ctrl-n:accept')"; then
+    if ! fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,tab --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt='Worktrees> ' --header='NAME                                               BRANCH' --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,tab:accept')"; then
       printf ""
       return
     fi
@@ -244,12 +245,12 @@ dashboard_pick_action() {
   selected_line=""
 
   for line in "${lines[@]}"; do
-    if [[ -z "$key" && "$line" =~ ^(enter|ctrl-d|ctrl-n)$ ]]; then
+    if [[ -z "$key" && "$line" =~ ^(enter|ctrl-d|tab)$ ]]; then
       key="$line"
       continue
     fi
 
-    if [[ -z "$selected_line" && ( "$line" == create$'\t'* || "$line" == worktree$'\t'* ) ]]; then
+    if [[ -z "$selected_line" && ( "$line" == create$'\t'* || "$line" == worktree$'\t'* || "$line" == branch$'\t'* ) ]]; then
       selected_line="$line"
       continue
     fi
@@ -264,7 +265,7 @@ dashboard_pick_action() {
     return
   fi
 
-  if [[ "$query" == *$'\t'* ]] || [[ "$query" =~ ^(enter|ctrl-d|ctrl-n)$ ]]; then
+  if [[ "$query" == *$'\t'* ]] || [[ "$query" =~ ^(enter|ctrl-d|tab)$ ]]; then
     query=""
   fi
 
@@ -282,11 +283,14 @@ dashboard_pick_action() {
 dashboard_candidates_for_query() {
   local repo_root="$1"
   local query="${2:-}"
+  local show_branches="${3:-0}"
   local rows
   local wt_name wt_branch wt_path
   local short_name short_branch display_line
   local name_col_width branch_col_width
   local query_lower name_lower branch_lower path_lower
+  local -A worktree_branches=()
+  local branch remote_branch local_name
 
   name_col_width=50
   branch_col_width=40
@@ -300,27 +304,72 @@ dashboard_candidates_for_query() {
   fi
 
   rows="$(list_worktrees_tsv "$repo_root" "1")"
-  if [[ -z "$rows" ]]; then
+
+  if [[ -n "$rows" ]]; then
+    while IFS=$'\t' read -r wt_name wt_branch wt_path; do
+      worktree_branches["$wt_branch"]=1
+
+      if [[ -n "$query_lower" ]]; then
+        name_lower="${wt_name,,}"
+        branch_lower="${wt_branch,,}"
+        path_lower="${wt_path,,}"
+
+        if [[ "$name_lower" != *"$query_lower"* && "$branch_lower" != *"$query_lower"* && "$path_lower" != *"$query_lower"* ]]; then
+          continue
+        fi
+      fi
+
+      short_name="$(truncate_for_column "$wt_name" "$name_col_width")"
+      short_branch="$(truncate_for_column "$wt_branch" "$branch_col_width")"
+      display_line="$(printf "%-50s %-40s" "$short_name" "$short_branch")"
+
+      printf "%s\t%s\t%s\t%s\t%s\n" "$display_line" "worktree" "$wt_name" "$wt_branch" "$wt_path"
+    done <<<"$rows"
+  fi
+
+  if [[ "$show_branches" != "1" ]]; then
     return
   fi
 
-  while IFS=$'\t' read -r wt_name wt_branch wt_path; do
-    if [[ -n "$query_lower" ]]; then
-      name_lower="${wt_name,,}"
-      branch_lower="${wt_branch,,}"
-      path_lower="${wt_path,,}"
+  # Local branches without a worktree
+  while IFS= read -r branch; do
+    [[ -n "$branch" ]] || continue
+    [[ -z "${worktree_branches[$branch]+x}" ]] || continue
 
-      if [[ "$name_lower" != *"$query_lower"* && "$branch_lower" != *"$query_lower"* && "$path_lower" != *"$query_lower"* ]]; then
+    if [[ -n "$query_lower" ]]; then
+      branch_lower="${branch,,}"
+      if [[ "$branch_lower" != *"$query_lower"* ]]; then
         continue
       fi
     fi
 
-    short_name="$(truncate_for_column "$wt_name" "$name_col_width")"
-    short_branch="$(truncate_for_column "$wt_branch" "$branch_col_width")"
+    short_name="$(truncate_for_column "$branch" "$name_col_width")"
+    short_branch="$(truncate_for_column "local" "$branch_col_width")"
     display_line="$(printf "%-50s %-40s" "$short_name" "$short_branch")"
 
-    printf "%s\t%s\t%s\t%s\t%s\n" "$display_line" "worktree" "$wt_name" "$wt_branch" "$wt_path"
-  done <<<"$rows"
+    printf "%s\t%s\t%s\t%s\t%s\n" "$display_line" "branch" "$branch" "$branch" ""
+  done < <(list_local_branches "$repo_root")
+
+  # Remote branches without a worktree (skip if local equivalent exists)
+  while IFS= read -r remote_branch; do
+    [[ -n "$remote_branch" ]] || continue
+    # Strip remote prefix (e.g., origin/feature -> feature)
+    local_name="${remote_branch#*/}"
+    [[ -z "${worktree_branches[$local_name]+x}" ]] || continue
+
+    if [[ -n "$query_lower" ]]; then
+      branch_lower="${remote_branch,,}"
+      if [[ "$branch_lower" != *"$query_lower"* ]]; then
+        continue
+      fi
+    fi
+
+    short_name="$(truncate_for_column "$local_name" "$name_col_width")"
+    short_branch="$(truncate_for_column "$remote_branch" "$branch_col_width")"
+    display_line="$(printf "%-50s %-40s" "$short_name" "$short_branch")"
+
+    printf "%s\t%s\t%s\t%s\t%s\n" "$display_line" "branch" "$local_name" "$remote_branch" ""
+  done < <(list_remote_branches "$repo_root")
 }
 
 run_dashboard() {
@@ -329,6 +378,7 @@ run_dashboard() {
   local current_branch="$3"
   local result action query selected_type selected_name selected_branch selected_path
   local suppress_enter_once
+  local show_branches
   local git_err confirm
 
   if ! has_fzf; then
@@ -338,8 +388,9 @@ run_dashboard() {
 
   query=""
   suppress_enter_once=0
+  show_branches=0
   while :; do
-    result="$(dashboard_pick_action "$repo_root" "$query")"
+    result="$(dashboard_pick_action "$repo_root" "$query" "$show_branches")"
     if [[ -z "$result" ]]; then
       return 0
     fi
@@ -350,6 +401,14 @@ run_dashboard() {
     fi
 
     case "$action" in
+      tab)
+        if [[ "$show_branches" == "0" ]]; then
+          show_branches=1
+        else
+          show_branches=0
+        fi
+        suppress_enter_once=1
+        ;;
       ctrl-d)
         if [[ "$selected_type" != "worktree" || -z "$selected_path" ]]; then
           tmux display-message "Select a worktree to delete"
@@ -384,16 +443,6 @@ run_dashboard() {
         query=""
         suppress_enter_once=1
         ;;
-      ctrl-n)
-        if [[ -z "${query//[[:space:]]/}" ]]; then
-          tmux display-message "Type a branch name to create/open"
-          suppress_enter_once=1
-          continue
-        fi
-
-        run_apply_with_spinner "$query" "$pane_path" "$current_branch"
-        return $?
-        ;;
       enter)
         if [[ "$suppress_enter_once" == "1" ]]; then
           suppress_enter_once=0
@@ -402,6 +451,11 @@ run_dashboard() {
 
         if [[ "$selected_type" == "worktree" && -n "$selected_path" ]]; then
           open_worktree_window "$selected_path"
+          return $?
+        fi
+
+        if [[ "$selected_type" == "branch" && -n "$selected_name" ]]; then
+          run_apply_with_spinner "$selected_name" "$pane_path" "$current_branch"
           return $?
         fi
 
@@ -446,6 +500,13 @@ open_worktree_window() {
 list_local_branches() {
   local repo_root="$1"
   git -C "$repo_root" for-each-ref --format='%(refname:short)' refs/heads
+}
+
+list_remote_branches() {
+  local repo_root="$1"
+  git -C "$repo_root" for-each-ref --format='%(refname:short)' refs/remotes \
+    | grep -v '/HEAD$' \
+    | grep '/'
 }
 
 branch_exists() {
@@ -782,7 +843,7 @@ if [[ "${1:-}" == "--branch-candidates" ]]; then
 fi
 
 if [[ "${1:-}" == "--dashboard-candidates" ]]; then
-  dashboard_candidates_for_query "${2:-}" "${3:-}"
+  dashboard_candidates_for_query "${2:-}" "${3:-}" "${4:-0}"
   exit 0
 fi
 

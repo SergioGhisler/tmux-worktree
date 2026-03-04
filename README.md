@@ -44,9 +44,7 @@ run '~/.config/tmux/plugins/tmux-worktree/worktree.tmux'
    - Your current query is always shown as the first `new` row
    - Existing worktrees stay visible in the list while you type
    - `Enter`: open selected worktree (or create/open from query if nothing selected)
-   - `Ctrl-N`: create/open from current query
    - `Ctrl-D`: delete selected linked worktree
-   - `Ctrl-P`: toggle PATH column on/off
 4. Shortcuts are shown in a dedicated hint line at the very bottom of the popup
 5. A new tmux window opens at the worktree path
 
