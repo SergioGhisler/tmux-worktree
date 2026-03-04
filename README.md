@@ -41,10 +41,10 @@ run '~/.config/tmux/plugins/tmux-worktree/worktree.tmux'
 1. Open any tmux pane inside a git repository
 2. Press `prefix + w` (or your configured `@worktree-bind`) to open the dashboard
 3. In the dashboard popup:
-   - Your current query is always shown as the first `new` row
-   - Existing worktrees stay visible in the list while you type
-   - `Enter`: open selected worktree (or create/open from query if nothing selected)
-   - `Ctrl-D`: delete selected linked worktree
+    - Your current query is always shown as the first `new` row
+    - Use `]` and `[` to cycle lists: worktrees -> local branches -> remote branches
+    - `Enter`: open selected worktree (or create/open from query if nothing selected)
+    - `Ctrl-D`: delete selected linked worktree
 4. Shortcuts are shown in a dedicated hint line at the very bottom of the popup
 5. A new tmux window opens at the worktree path
 
