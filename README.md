@@ -46,6 +46,8 @@ run '~/.config/tmux/plugins/tmux-worktree/worktree.tmux'
     - The header shows the active list mode in brackets (for example: `MODE: [WORKTREES] - local - remote`)
     - `Enter`: open selected worktree (or create/open from query if nothing selected)
     - `Ctrl-D`: delete selected linked worktree
+    - When creating a new branch, a second picker asks for the base branch and marks each option as `local` or `remote`
+    - Press `Esc` in that second picker to go back to the dashboard without creating anything
 4. Shortcuts are shown in a dedicated hint line at the very bottom of the popup
 5. A new tmux window opens at the worktree path
 
@@ -66,7 +68,7 @@ set -g @worktree-show-path 'on'            # show PATH column in dashboard (on/o
 ## How it works
 
 - **Existing branch**: runs `git worktree add <path> <branch>` and opens the result
-- **New branch**: in dashboard mode, runs `git worktree add -b <branch> <path> <current-branch>`
+- **New branch**: prompts for a base branch (showing `local`/`remote`), then runs `git worktree add -b <branch> <path> <base-branch>`
 - **Dashboard mode**: one popup for open/create/delete actions with keyboard shortcuts
 - **Already checked out**: if the branch already has a worktree, switches to its existing path instead of creating a duplicate
 - **Collision handling**: if a path is already used by a different branch, a numbered suffix (`-2`, `-3`, ...) is tried

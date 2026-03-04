@@ -251,15 +251,9 @@ dashboard_pick_action() {
   fi
 
   if (( show_bottom_legend == 1 )); then
-    if ! fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,[,] --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt="$prompt_label" --header="$header_text" --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,[:accept,]:accept' --preview='printf "enter open/create | ctrl-d delete | ] next list | [ prev list\n"' --preview-window='down:1:nowrap')"; then
-      printf ""
-      return
-    fi
+    fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,ctrl-r,[,] --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt="$prompt_label" --header="$header_text" --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,ctrl-r:accept,[:accept,]:accept' --preview='printf "enter open/create | ctrl-d delete | ctrl-r fetch | ] next list | [ prev list\n"' --preview-window='down:1:nowrap')" || true
   else
-    if ! fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,[,] --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt="$prompt_label" --header="$header_text" --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,[:accept,]:accept')"; then
-      printf ""
-      return
-    fi
+    fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,ctrl-r,[,] --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt="$prompt_label" --header="$header_text" --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,ctrl-r:accept,[:accept,]:accept')" || true
   fi
 
   mapfile -t lines <<<"$fzf_output"
@@ -268,7 +262,7 @@ dashboard_pick_action() {
   selected_line=""
 
   for line in "${lines[@]}"; do
-    if [[ -z "$key" && "$line" =~ ^(enter|ctrl-d|\[|\])$ ]]; then
+    if [[ -z "$key" && "$line" =~ ^(enter|ctrl-d|ctrl-r|\[|\])$ ]]; then
       key="$line"
       continue
     fi
@@ -288,7 +282,7 @@ dashboard_pick_action() {
     return
   fi
 
-  if [[ "$query" == *$'\t'* ]] || [[ "$query" =~ ^(enter|ctrl-d|tab)$ ]]; then
+  if [[ "$query" == *$'\t'* ]] || [[ "$query" =~ ^(enter|ctrl-d|ctrl-r|tab)$ ]]; then
     query=""
   fi
 
@@ -331,6 +325,9 @@ dashboard_candidates_for_query() {
   if [[ -n "$rows" ]]; then
     while IFS=$'\t' read -r wt_name wt_branch wt_path; do
       worktree_branches["$wt_branch"]=1
+
+      # Only display worktree rows in the worktrees tab
+      [[ "$list_mode" == "worktrees" ]] || continue
 
       if [[ -n "$query_lower" ]]; then
         name_lower="${wt_name,,}"
@@ -405,7 +402,7 @@ run_dashboard() {
   local current_branch="$3"
   local result action query selected_type selected_name selected_branch selected_path
   local list_mode
-  local git_err confirm
+  local git_err confirm base_for_new
 
   if ! has_fzf; then
     tmux display-message "Dashboard mode requires fzf"
@@ -442,6 +439,17 @@ run_dashboard() {
           *) list_mode="worktrees" ;;
         esac
         ;;
+      ctrl-r)
+        printf "\rFetching remotes..."
+        if git_err="$(git -C "$repo_root" fetch --all --prune 2>&1)"; then
+          printf "\r\033[KFetch complete."
+          sleep 0.5
+          printf "\r\033[K"
+        else
+          printf "\r\033[K"
+          show_git_error "$git_err"
+        fi
+        ;;
       ctrl-d)
         if [[ "$selected_type" != "worktree" || -z "$selected_path" ]]; then
           tmux display-message "Select a worktree to delete"
@@ -477,7 +485,18 @@ run_dashboard() {
         fi
 
         if [[ "$selected_type" == "branch" && -n "$selected_name" ]]; then
-          run_apply_with_spinner "$selected_name" "$pane_path" "$current_branch"
+          # If the branch ref differs from the name, it's a remote branch —
+          # use the remote ref directly as the base (no picker needed).
+          if [[ -n "$selected_branch" && "$selected_branch" != "$selected_name" ]]; then
+            run_apply_with_spinner "$selected_name" "$pane_path" "$selected_branch"
+            return $?
+          fi
+
+          if ! base_for_new="$(resolve_base_branch_for_target "$repo_root" "$current_branch" "$selected_name")"; then
+            continue
+          fi
+
+          run_apply_with_spinner "$selected_name" "$pane_path" "$base_for_new"
           return $?
         fi
 
@@ -485,7 +504,11 @@ run_dashboard() {
           continue
         fi
 
-        run_apply_with_spinner "$query" "$pane_path" "$current_branch"
+        if ! base_for_new="$(resolve_base_branch_for_target "$repo_root" "$current_branch" "$query")"; then
+          continue
+        fi
+
+        run_apply_with_spinner "$query" "$pane_path" "$base_for_new"
         return $?
         ;;
       *)
@@ -535,6 +558,12 @@ branch_exists() {
   local repo_root="$1"
   local branch_name="$2"
   git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch_name"
+}
+
+remote_branch_exists() {
+  local repo_root="$1"
+  local branch_name="$2"
+  git -C "$repo_root" show-ref --verify --quiet "refs/remotes/$branch_name"
 }
 
 current_branch_name() {
@@ -597,21 +626,44 @@ prompt_target_branch_name() {
 select_base_branch() {
   local repo_root="$1"
   local current_branch="$2"
-  local selected
+  local selected ref ref_type candidates row
+  local -A seen=()
 
   if has_fzf; then
-    selected="$(
+    candidates=""
+
+    while IFS= read -r ref; do
+      [[ -n "$ref" ]] || continue
+      [[ -z "${seen[$ref]+x}" ]] || continue
+      seen["$ref"]=1
+      row="$(printf "%-50s %-7s\t%s\t%s\n" "$ref" "local" "$ref" "local")"
+      candidates+="$row"
+    done < <(
       {
         printf "%s\n" "$current_branch"
         list_local_branches "$repo_root"
-      } | awk 'NF && !seen[$0]++' | fzf --height=70% --layout=reverse --border --prompt='Base> ' --query="$current_branch" --header='Select base branch for new branch (default: current)'
-    )"
+      } | awk 'NF'
+    )
 
-    if [[ -z "$selected" ]]; then
-      printf "%s" "$current_branch"
-    else
-      printf "%s" "$selected"
+    while IFS= read -r ref; do
+      [[ -n "$ref" ]] || continue
+      [[ -z "${seen[$ref]+x}" ]] || continue
+      seen["$ref"]=1
+      row="$(printf "%-50s %-7s\t%s\t%s\n" "$ref" "remote" "$ref" "remote")"
+      candidates+="$row"
+    done < <(list_remote_branches "$repo_root")
+
+    if ! selected="$(printf "%s" "$candidates" | fzf --delimiter=$'\t' --with-nth=1 --accept-nth=2,3 --height=70% --layout=reverse --border --prompt='Base> ' --query="$current_branch" --header='Select base branch for new branch. Esc goes back. Type column shows local/remote.' --bind='esc:abort' --preview='printf "Ref: %s\nType: %s\n" {2} {3}' --preview-window=down:2:wrap)"; then
+      return 130
     fi
+
+    IFS=$'\t' read -r ref ref_type <<<"$selected"
+
+    if [[ -z "$ref" ]]; then
+      return 130
+    fi
+
+    printf "%s" "$ref"
     return
   fi
 
@@ -621,6 +673,44 @@ select_base_branch() {
   else
     printf "%s" "$selected"
   fi
+}
+
+resolve_base_branch_for_target() {
+  local repo_root="$1"
+  local current_branch="$2"
+  local target_name="$3"
+  local target_sanitized selected
+
+  target_sanitized="$(sanitize_branch_name "$target_name")"
+  if [[ -z "$target_sanitized" ]] || ! git check-ref-format --branch "$target_sanitized" >/dev/null 2>&1; then
+    printf ""
+    return 0
+  fi
+
+  if branch_exists "$repo_root" "$target_sanitized"; then
+    printf ""
+    return 0
+  fi
+
+  selected="$(select_base_branch "$repo_root" "$current_branch")"
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    return $rc
+  fi
+
+  selected="$(sanitize_branch_name "$selected")"
+
+  if [[ -z "$selected" ]] || ! git check-ref-format --branch "$selected" >/dev/null 2>&1; then
+    tmux display-message "Invalid base branch: '$selected'"
+    return 1
+  fi
+
+  if ! branch_exists "$repo_root" "$selected" && ! remote_branch_exists "$repo_root" "$selected"; then
+    tmux display-message "Base branch not found: $selected"
+    return 1
+  fi
+
+  printf "%s" "$selected"
 }
 
 run_apply_with_spinner() {
@@ -763,21 +853,12 @@ main() {
   fi
 
   if [[ "$mode" == "prompt" ]]; then
-    if branch_exists "$repo_root" "$name"; then
-      base_branch=""
-    else
-      base_branch="$(select_base_branch "$repo_root" "$current_branch")"
-      base_branch="$(sanitize_branch_name "$base_branch")"
-      if [[ -z "$base_branch" ]] || ! git check-ref-format --branch "$base_branch" >/dev/null 2>&1; then
-        tmux display-message "Invalid base branch: '$base_branch'"
-        exit 1
-      fi
-
-      if ! branch_exists "$repo_root" "$base_branch"; then
-        tmux display-message "Base branch not found: $base_branch"
-        exit 1
-      fi
-    fi
+    base_branch="$(resolve_base_branch_for_target "$repo_root" "$current_branch" "$name")"
+    case $? in
+      0) ;;
+      130) exit 0 ;;
+      *) exit 1 ;;
+    esac
 
     run_apply_with_spinner "$name" "$pane_path" "$base_branch"
     exit $?
@@ -844,7 +925,7 @@ main() {
         exit 1
       fi
 
-      if ! branch_exists "$repo_root" "$base_branch"; then
+      if ! branch_exists "$repo_root" "$base_branch" && ! remote_branch_exists "$repo_root" "$base_branch"; then
         tmux display-message "Base branch not found: $base_branch"
         exit 1
       fi
