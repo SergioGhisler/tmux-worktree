@@ -213,7 +213,7 @@ dashboard_pick_action() {
   local repo_root="$1"
   local query="${2:-}"
   local list_mode="${3:-worktrees}"
-  local script_path_q repo_root_q reload_cmd mode_label
+  local script_path_q repo_root_q reload_cmd mode_header prompt_label header_text
   local fzf_output key selected_line type wt_name wt_branch wt_path
   local line_count show_bottom_legend
   local -a lines=()
@@ -223,11 +223,26 @@ dashboard_pick_action() {
   reload_cmd="$script_path_q --dashboard-candidates $repo_root_q {q} $list_mode"
 
   case "$list_mode" in
-    worktrees) mode_label="WORKTREES" ;;
-    local) mode_label="LOCAL BRANCHES" ;;
-    remote) mode_label="REMOTE BRANCHES" ;;
-    *) mode_label="WORKTREES" ;;
+    worktrees)
+      mode_header="MODE: [WORKTREES] - local - remote"
+      prompt_label="Worktrees> "
+      ;;
+    local)
+      mode_header="MODE: worktrees - [LOCAL] - remote"
+      prompt_label="Local> "
+      ;;
+    remote)
+      mode_header="MODE: worktrees - local - [REMOTE]"
+      prompt_label="Remote> "
+      ;;
+    *)
+      mode_header="MODE: [WORKTREES] - local - remote"
+      prompt_label="Worktrees> "
+      ;;
   esac
+  header_text="$mode_header"
+  header_text+=$'\n'
+  header_text+="NAME                                               BRANCH"
 
   line_count="${LINES:-0}"
   show_bottom_legend=1
@@ -236,12 +251,12 @@ dashboard_pick_action() {
   fi
 
   if (( show_bottom_legend == 1 )); then
-    if ! fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,[,] --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt='Worktrees> ' --header="NAME                                               BRANCH ($mode_label)" --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,[:accept,]:accept' --preview='printf "enter open/create | ctrl-d delete | ] next list | [ prev list\n"' --preview-window='down:1:nowrap')"; then
+    if ! fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,[,] --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt="$prompt_label" --header="$header_text" --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,[:accept,]:accept' --preview='printf "enter open/create | ctrl-d delete | ] next list | [ prev list\n"' --preview-window='down:1:nowrap')"; then
       printf ""
       return
     fi
   else
-    if ! fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,[,] --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt='Worktrees> ' --header="NAME                                               BRANCH ($mode_label)" --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,[:accept,]:accept')"; then
+    if ! fzf_output="$(fzf --disabled --print-query --expect=enter,ctrl-d,[,] --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt="$prompt_label" --header="$header_text" --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept,ctrl-d:accept,[:accept,]:accept')"; then
       printf ""
       return
     fi

@@ -43,6 +43,7 @@ run '~/.config/tmux/plugins/tmux-worktree/worktree.tmux'
 3. In the dashboard popup:
     - Your current query is always shown as the first `new` row
     - Use `]` and `[` to cycle lists: worktrees -> local branches -> remote branches
+    - The header shows the active list mode in brackets (for example: `MODE: [WORKTREES] - local - remote`)
     - `Enter`: open selected worktree (or create/open from query if nothing selected)
     - `Ctrl-D`: delete selected linked worktree
 4. Shortcuts are shown in a dedicated hint line at the very bottom of the popup
