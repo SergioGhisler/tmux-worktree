@@ -436,7 +436,7 @@ run_dashboard() {
   local pane_path="$2"
   local current_branch="$3"
   local result action query selected_type selected_name selected_branch selected_path
-  local list_mode
+  local list_mode copy_files
   local git_err confirm base_for_new
 
   if ! has_fzf; then
@@ -525,7 +525,8 @@ run_dashboard() {
           # If the branch ref differs from the name, it's a remote branch —
           # use the remote ref directly as the base (no picker needed).
           if [[ -n "$selected_branch" && "$selected_branch" != "$selected_name" ]]; then
-            run_apply_with_spinner "$selected_name" "$pane_path" "$selected_branch"
+            copy_files="$(maybe_select_ignored_files "$repo_root" "$selected_name")"
+            run_apply_with_spinner "$selected_name" "$pane_path" "$selected_branch" "$copy_files"
             return $?
           fi
 
@@ -533,7 +534,8 @@ run_dashboard() {
             continue
           fi
 
-          run_apply_with_spinner "$selected_name" "$pane_path" "$base_for_new"
+          copy_files="$(maybe_select_ignored_files "$repo_root" "$selected_name")"
+          run_apply_with_spinner "$selected_name" "$pane_path" "$base_for_new" "$copy_files"
           return $?
         fi
 
@@ -545,7 +547,8 @@ run_dashboard() {
           continue
         fi
 
-        run_apply_with_spinner "$query" "$pane_path" "$base_for_new"
+        copy_files="$(maybe_select_ignored_files "$repo_root" "$(sanitize_branch_name "$query")")"
+        run_apply_with_spinner "$query" "$pane_path" "$base_for_new" "$copy_files"
         return $?
         ;;
       *)
@@ -577,6 +580,123 @@ open_worktree_window() {
   fi
 
   return 0
+}
+
+list_git_ignored_files() {
+  local repo_root="$1"
+  git -C "$repo_root" ls-files --others --ignored --exclude-standard --directory \
+    | sed 's|/$||' \
+    | sort
+}
+
+select_ignored_files() {
+  local repo_root="$1"
+  local ignored_files selected
+  local -a numbered_files=()
+  local i choice
+
+  ignored_files="$(list_git_ignored_files "$repo_root")"
+
+  if [[ -z "$ignored_files" ]]; then
+    printf ""
+    return
+  fi
+
+  if has_fzf; then
+    selected="$(printf "%s\n" "$ignored_files" \
+      | fzf --multi --layout=reverse --border \
+        --prompt='Copy to worktree> ' \
+        --header='Select ignored files/dirs to copy (TAB toggle, ENTER confirm, ESC skip)' \
+        --bind 'ctrl-a:toggle-all' \
+      )" || true
+
+    printf "%s" "$selected"
+    return
+  fi
+
+  # Fallback: numbered list with read prompt
+  mapfile -t numbered_files <<<"$ignored_files"
+  printf "\nIgnored files/dirs:\n"
+  for i in "${!numbered_files[@]}"; do
+    printf "  %d) %s\n" "$((i + 1))" "${numbered_files[$i]}"
+  done
+  printf "\nEnter numbers to copy (comma-separated, 'a' for all, empty to skip): "
+  read -r choice
+
+  if [[ -z "$choice" ]]; then
+    printf ""
+    return
+  fi
+
+  if [[ "$choice" == "a" || "$choice" == "A" ]]; then
+    printf "%s" "$ignored_files"
+    return
+  fi
+
+  local result=""
+  IFS=',' read -r -a indices <<<"$choice"
+  for i in "${indices[@]}"; do
+    i="$(trim_name "$i")"
+    if [[ "$i" =~ ^[0-9]+$ ]] && (( i >= 1 && i <= ${#numbered_files[@]} )); then
+      if [[ -n "$result" ]]; then
+        result+=$'\n'
+      fi
+      result+="${numbered_files[$((i - 1))]}"
+    fi
+  done
+
+  printf "%s" "$result"
+}
+
+copy_ignored_files_to_worktree() {
+  local repo_root="$1"
+  local worktree_path="$2"
+  local files_list="$3"
+  local file target_dir
+
+  if [[ -z "$files_list" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r file; do
+    [[ -n "$file" ]] || continue
+
+    if [[ -d "$repo_root/$file" ]]; then
+      target_dir="$worktree_path/$file"
+      mkdir -p "$target_dir"
+      cp -R "$repo_root/$file/." "$target_dir/"
+    elif [[ -f "$repo_root/$file" ]]; then
+      target_dir="$(dirname "$worktree_path/$file")"
+      mkdir -p "$target_dir"
+      cp "$repo_root/$file" "$worktree_path/$file"
+    fi
+  done <<<"$files_list"
+}
+
+branch_has_worktree() {
+  local repo_root="$1"
+  local branch_name="$2"
+  local wt
+
+  wt="$(git -C "$repo_root" worktree list --porcelain | awk -v branch="refs/heads/$branch_name" '
+    /^worktree / { wt=$2 }
+    /^branch / && $2 == branch { print wt; exit }
+  ')"
+
+  [[ -n "$wt" ]]
+}
+
+maybe_select_ignored_files() {
+  local repo_root="$1"
+  local branch_name="$2"
+
+  # Skip if branch already has a worktree (nothing new will be created)
+  if branch_exists "$repo_root" "$branch_name" && branch_has_worktree "$repo_root" "$branch_name"; then
+    printf ""
+    return
+  fi
+
+  select_ignored_files "$repo_root"
 }
 
 list_local_branches() {
@@ -754,6 +874,7 @@ run_apply_with_spinner() {
   local name="$1"
   local pane_path="$2"
   local base_branch="${3:-}"
+  local copy_files="${4:-}"
   local pid i frame
   local frames=("■□□□□" "■■□□□" "■■■□□" "■■■■□" "■■■■■" "□■■■■" "□□■■■" "□□□■■" "□□□□■")
   local green reset
@@ -761,7 +882,7 @@ run_apply_with_spinner() {
   green='\033[32m'
   reset='\033[0m'
 
-  "${BASH_SOURCE[0]}" --apply "$name" "$pane_path" "$base_branch" >/dev/null 2>&1 &
+  "${BASH_SOURCE[0]}" --apply "$name" "$pane_path" "$base_branch" "$copy_files" >/dev/null 2>&1 &
   pid=$!
   i=0
 
@@ -781,7 +902,7 @@ main() {
   local input_name name pane_path repo_root repo_name worktrees_root worktree_path
   local worktree_dir_name candidate_path path_branch path_try
   local existing_branch_worktree
-  local git_err current_branch base_branch
+  local git_err current_branch base_branch copy_files
   local selected_row selected_name selected_branch selected_path confirm
   local mode
 
@@ -803,6 +924,7 @@ main() {
     input_name="${2:-}"
     pane_path="${3:-$(tmux display-message -p '#{pane_current_path}')}"
     base_branch="${4:-}"
+    copy_files="${5:-}"
   else
     input_name="${1:-}"
     pane_path="${2:-$(tmux display-message -p '#{pane_current_path}')}"
@@ -899,7 +1021,8 @@ main() {
       *) exit 1 ;;
     esac
 
-    run_apply_with_spinner "$name" "$pane_path" "$base_branch"
+    copy_files="$(maybe_select_ignored_files "$repo_root" "$name")"
+    run_apply_with_spinner "$name" "$pane_path" "$base_branch" "$copy_files"
     exit $?
   fi
 
@@ -952,6 +1075,8 @@ main() {
       elif ! git_err="$(git -C "$repo_root" worktree add "$worktree_path" "$name" 2>&1)"; then
         show_git_error "$git_err"
         exit 1
+      else
+        copy_ignored_files_to_worktree "$repo_root" "$worktree_path" "${copy_files:-}"
       fi
     else
       if [[ -z "$base_branch" ]]; then
@@ -973,6 +1098,8 @@ main() {
         show_git_error "$git_err"
         exit 1
       fi
+
+      copy_ignored_files_to_worktree "$repo_root" "$worktree_path" "${copy_files:-}"
     fi
   fi
 
