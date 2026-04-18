@@ -79,6 +79,69 @@ show_git_error() {
   tmux display-message "$message"
 }
 
+canonical_path() {
+  local path="$1"
+  (
+    cd "$path" 2>/dev/null && pwd -P
+  )
+}
+
+git_repo_root_for_path() {
+  local path="$1"
+  git -C "$path" rev-parse --show-toplevel 2>/dev/null
+}
+
+workspace_root_from_parent() {
+  local parent_path="$1"
+  local parent_name
+
+  parent_name="$(basename "$parent_path")"
+  printf "%s/%s-workspaces" "$(dirname "$parent_path")" "$parent_name"
+}
+
+list_child_repo_roots_tsv() {
+  local parent_path="$1"
+  local child_path repo_root child_real repo_real child_name
+
+  shopt -s nullglob
+  for child_path in "$parent_path"/*; do
+    [[ -d "$child_path" ]] || continue
+
+    repo_root="$(git_repo_root_for_path "$child_path")"
+    [[ -n "$repo_root" ]] || continue
+
+    child_real="$(canonical_path "$child_path")"
+    repo_real="$(canonical_path "$repo_root")"
+    [[ -n "$child_real" && -n "$repo_real" ]] || continue
+    [[ "$child_real" == "$repo_real" ]] || continue
+
+    child_name="$(basename "$child_path")"
+    printf "%s\t%s\n" "$child_name" "$repo_real"
+  done
+  shopt -u nullglob
+}
+
+has_child_git_repos() {
+  local parent_path="$1"
+  [[ -n "$(list_child_repo_roots_tsv "$parent_path")" ]]
+}
+
+list_workspace_rows_tsv() {
+  local parent_path="$1"
+  local workspace_root workspace_path workspace_name
+
+  workspace_root="$(workspace_root_from_parent "$parent_path")"
+  [[ -d "$workspace_root" ]] || return 0
+
+  shopt -s nullglob
+  for workspace_path in "$workspace_root"/*; do
+    [[ -d "$workspace_path" ]] || continue
+    workspace_name="$(basename "$workspace_path")"
+    printf "%s\t%s\n" "$workspace_name" "$workspace_path"
+  done
+  shopt -u nullglob
+}
+
 maybe_delete_local_branch() {
   local repo_root="$1"
   local branch_name="$2"
@@ -429,6 +492,140 @@ dashboard_candidates_for_query() {
 
     printf "%s\t%s\t%s\t%s\t%s\n" "$display_line" "branch" "$local_name" "$remote_branch" ""
   done < <(list_remote_branches "$repo_root")
+}
+
+workspace_dashboard_pick_action() {
+  local parent_path="$1"
+  local query="${2:-}"
+  local script_path_q parent_path_q reload_cmd header_text prompt_label fzf_output
+  local key selected_line line
+  local -a lines=()
+
+  script_path_q="$(printf "%q" "${BASH_SOURCE[0]}")"
+  parent_path_q="$(printf "%q" "$parent_path")"
+  reload_cmd="$script_path_q --workspace-dashboard-candidates $parent_path_q {q}"
+  header_text=$'MODE: [WORKSPACES]\nNAME                                               BRANCH'
+  prompt_label="Workspaces> "
+
+  fzf_output="$(fzf --disabled --print-query --expect=enter --query="$query" --delimiter=$'\t' --with-nth=1 --accept-nth=2,3,4,5 --layout=reverse --border --prompt="$prompt_label" --header="$header_text" --bind "start:reload:$reload_cmd" --bind "change:reload:$reload_cmd" --bind 'enter:accept' --preview='printf "enter open/create coordinated workspace\n"' --preview-window='down:1:nowrap')" || true
+
+  mapfile -t lines <<<"$fzf_output"
+  key=""
+  query=""
+  selected_line=""
+
+  for line in "${lines[@]}"; do
+    if [[ -z "$key" && "$line" == "enter" ]]; then
+      key="$line"
+      continue
+    fi
+
+    if [[ -z "$selected_line" && ( "$line" == create$'\t'* || "$line" == workspace$'\t'* ) ]]; then
+      selected_line="$line"
+      continue
+    fi
+
+    if [[ -z "$query" ]]; then
+      query="$line"
+    fi
+  done
+
+  if [[ -z "$key" ]]; then
+    printf ""
+    return
+  fi
+
+  if [[ "$query" == *$'\t'* ]] || [[ "$query" == "enter" ]]; then
+    query=""
+  fi
+
+  local type name branch path
+  type=""
+  name=""
+  branch=""
+  path=""
+  if [[ -n "$selected_line" ]]; then
+    IFS=$'\t' read -r type name branch path <<<"$selected_line"
+  fi
+
+  printf "%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" "$key" "$query" "$type" "$name" "$branch" "$path"
+}
+
+workspace_dashboard_candidates_for_query() {
+  local parent_path="$1"
+  local query="${2:-}"
+  local rows workspace_name workspace_path short_name display_line
+  local name_col_width branch_col_width query_lower name_lower path_lower
+
+  name_col_width=50
+  branch_col_width=40
+  query="$(trim_name "$query")"
+  query_lower="${query,,}"
+
+  if [[ -n "$query" ]]; then
+    short_name="$(truncate_for_column "$query" "$name_col_width")"
+    display_line="$(printf "%-50s %-40s" "$short_name" "new")"
+    printf "%s\t%s\t%s\t%s\t%s\n" "$display_line" "create" "$query" "" ""
+  fi
+
+  rows="$(list_workspace_rows_tsv "$parent_path")"
+  [[ -n "$rows" ]] || return 0
+
+  while IFS=$'\t' read -r workspace_name workspace_path; do
+    [[ -n "$workspace_name" ]] || continue
+
+    if [[ -n "$query_lower" ]]; then
+      name_lower="${workspace_name,,}"
+      path_lower="${workspace_path,,}"
+      if [[ "$name_lower" != *"$query_lower"* && "$path_lower" != *"$query_lower"* ]]; then
+        continue
+      fi
+    fi
+
+    short_name="$(truncate_for_column "$workspace_name" "$name_col_width")"
+    display_line="$(printf "%-50s %-40s" "$short_name" "$workspace_name")"
+    printf "%s\t%s\t%s\t%s\t%s\n" "$display_line" "workspace" "$workspace_name" "$workspace_name" "$workspace_path"
+  done <<<"$rows"
+}
+
+run_workspace_dashboard() {
+  local parent_path="$1"
+  local result action query selected_type selected_name selected_branch selected_path
+
+  if ! has_fzf; then
+    tmux display-message "Dashboard mode requires fzf"
+    return 1
+  fi
+
+  query=""
+  while :; do
+    result="$(workspace_dashboard_pick_action "$parent_path" "$query")"
+    if [[ -z "$result" ]]; then
+      return 0
+    fi
+
+    IFS=$'\x1f' read -r action query selected_type selected_name selected_branch selected_path <<<"$result"
+    [[ "$query" == *$'\x1f'* ]] && query=""
+
+    case "$action" in
+      enter)
+        if [[ "$selected_type" == "workspace" && -n "$selected_path" ]]; then
+          open_worktree_window "$selected_path"
+          return $?
+        fi
+
+        if [[ -z "${query//[[:space:]]/}" ]]; then
+          continue
+        fi
+
+        run_apply_with_spinner "$query" "$parent_path"
+        return $?
+        ;;
+      *)
+        continue
+        ;;
+    esac
+  done
 }
 
 run_dashboard() {
@@ -870,6 +1067,109 @@ resolve_base_branch_for_target() {
   printf "%s" "$selected"
 }
 
+create_multi_repo_workspace() {
+  local parent_path="$1"
+  local input_name="$2"
+  local name workspace_root workspace_path rows
+  local repo_name repo_root current_ref target_path path_branch existing_branch_worktree git_err
+  local cleanup_needed=0
+  local -a created_repos=() created_paths=()
+
+  input_name="$(trim_name "$input_name")"
+  if [[ -z "${input_name//[[:space:]]/}" ]]; then
+    tmux display-message "Workspace name is empty"
+    return 0
+  fi
+
+  name="$(sanitize_branch_name "$input_name")"
+  if [[ -z "$name" ]] || ! git check-ref-format --branch "$name" >/dev/null 2>&1; then
+    tmux display-message "Invalid name: '$input_name'"
+    return 1
+  fi
+
+  rows="$(list_child_repo_roots_tsv "$parent_path")"
+  if [[ -z "$rows" ]]; then
+    tmux display-message "No direct child git repositories found"
+    return 1
+  fi
+
+  workspace_root="$(workspace_root_from_parent "$parent_path")"
+  workspace_path="$workspace_root/$(worktree_dir_name_from_branch "$name")"
+
+  while IFS=$'\t' read -r repo_name repo_root; do
+    [[ -n "$repo_name" && -n "$repo_root" ]] || continue
+    target_path="$workspace_path/$repo_name"
+
+    if [[ -e "$target_path" && ! -e "$target_path/.git" ]]; then
+      tmux display-message "Path exists and is not a worktree: $target_path"
+      return 1
+    fi
+
+    if [[ -e "$target_path/.git" ]]; then
+      path_branch="$(git -C "$target_path" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+      if [[ "$path_branch" != "$name" ]]; then
+        tmux display-message "Path already used by different branch: $target_path"
+        return 1
+      fi
+    fi
+
+    if branch_exists "$repo_root" "$name"; then
+      existing_branch_worktree="$(git -C "$repo_root" worktree list --porcelain | awk -v branch="refs/heads/$name" '
+        /^worktree / { wt=$2 }
+        /^branch / && $2 == branch { print wt; exit }
+      ')"
+
+      if [[ -n "$existing_branch_worktree" ]]; then
+        existing_branch_worktree="$(canonical_path "$existing_branch_worktree")"
+        if [[ "$existing_branch_worktree" != "$target_path" ]]; then
+          tmux display-message "Branch '$name' already has a worktree in $repo_name"
+          return 1
+        fi
+      fi
+    fi
+  done <<<"$rows"
+
+  mkdir -p "$workspace_root" "$workspace_path"
+
+  while IFS=$'\t' read -r repo_name repo_root; do
+    [[ -n "$repo_name" && -n "$repo_root" ]] || continue
+    target_path="$workspace_path/$repo_name"
+
+    if [[ -e "$target_path/.git" ]]; then
+      continue
+    fi
+
+    if branch_exists "$repo_root" "$name"; then
+      if ! git_err="$(git -C "$repo_root" worktree add "$target_path" "$name" 2>&1)"; then
+        show_git_error "$git_err"
+        cleanup_needed=1
+        break
+      fi
+    else
+      current_ref="$(git -C "$repo_root" symbolic-ref --quiet --short HEAD 2>/dev/null || printf "HEAD")"
+      if ! git_err="$(git -C "$repo_root" worktree add -b "$name" "$target_path" "$current_ref" 2>&1)"; then
+        show_git_error "$git_err"
+        cleanup_needed=1
+        break
+      fi
+    fi
+
+    created_repos+=("$repo_root")
+    created_paths+=("$target_path")
+  done <<<"$rows"
+
+  if [[ "$cleanup_needed" == "1" ]]; then
+    local i
+    for i in "${!created_paths[@]}"; do
+      git -C "${created_repos[$i]}" worktree remove --force "${created_paths[$i]}" >/dev/null 2>&1 || true
+    done
+    rmdir "$workspace_path" >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  open_worktree_window "$workspace_path"
+}
+
 run_apply_with_spinner() {
   local name="$1"
   local pane_path="$2"
@@ -904,7 +1204,7 @@ main() {
   local existing_branch_worktree
   local git_err current_branch base_branch copy_files
   local selected_row selected_name selected_branch selected_path confirm
-  local mode
+  local mode parent_path
 
   mode="direct"
   if [[ "${1:-}" == "--prompt" ]]; then
@@ -930,9 +1230,43 @@ main() {
     pane_path="${2:-$(tmux display-message -p '#{pane_current_path}')}"
   fi
 
-  if ! repo_root="$(git -C "$pane_path" rev-parse --show-toplevel 2>/dev/null)"; then
-    tmux display-message "Not inside a git repository: $pane_path"
-    exit 1
+  repo_root="$(git_repo_root_for_path "$pane_path")"
+  if [[ -z "$repo_root" ]]; then
+    parent_path="$(canonical_path "$pane_path")"
+
+    if [[ -z "$parent_path" || ! -d "$parent_path" ]]; then
+      tmux display-message "Not inside a git repository: $pane_path"
+      exit 1
+    fi
+
+    if ! has_child_git_repos "$parent_path"; then
+      tmux display-message "Not inside a git repository: $pane_path"
+      exit 1
+    fi
+
+    case "$mode" in
+      dashboard)
+        run_workspace_dashboard "$parent_path"
+        exit $?
+        ;;
+      prompt)
+        read -r -p "Workspace/branch name: " input_name
+        ;;
+      apply|direct)
+        ;;
+      *)
+        tmux display-message "This action requires being inside a git repository"
+        exit 1
+        ;;
+    esac
+
+    input_name="$(trim_name "$input_name")"
+    if [[ -z "$input_name" ]]; then
+      exit 0
+    fi
+
+    create_multi_repo_workspace "$parent_path" "$input_name"
+    exit $?
   fi
 
   current_branch="$(current_branch_name "$repo_root")"
@@ -1113,6 +1447,11 @@ fi
 
 if [[ "${1:-}" == "--dashboard-candidates" ]]; then
   dashboard_candidates_for_query "${2:-}" "${3:-}" "${4:-0}"
+  exit 0
+fi
+
+if [[ "${1:-}" == "--workspace-dashboard-candidates" ]]; then
+  workspace_dashboard_candidates_for_query "${2:-}" "${3:-}"
   exit 0
 fi
 

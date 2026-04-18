@@ -1,6 +1,6 @@
 # tmux-worktree
 
-A tmux plugin to create, list, switch to, and delete git worktrees from a single floating popup, powered by fzf.
+A tmux plugin to create, list, switch to, and delete git worktrees from a single floating popup, powered by fzf. It can also create coordinated workspaces when you are in a non-git parent folder whose direct children are separate git repositories.
 
 Press the main bind key to open a dashboard popup. From there you can open an existing worktree, create one from your query, delete one, and toggle the path column.
 
@@ -38,7 +38,7 @@ run '~/.config/tmux/plugins/tmux-worktree/worktree.tmux'
 
 ## Usage
 
-1. Open any tmux pane inside a git repository
+1. Open any tmux pane inside a git repository, or inside a non-git parent folder whose direct child folders are git repositories
 2. Press `prefix + w` (or your configured `@worktree-bind`) to open the dashboard
 3. In the dashboard popup:
     - Your current query is always shown as the first `new` row
@@ -48,10 +48,13 @@ run '~/.config/tmux/plugins/tmux-worktree/worktree.tmux'
     - `Ctrl-D`: delete selected linked worktree (with optional local branch deletion)
     - When creating a new branch, a second picker asks for the base branch and marks each option as `local` or `remote`
     - Press `Esc` in that second picker to go back to the dashboard without creating anything
+    - In parent-folder mode, the popup switches to `MODE: [WORKSPACES]` and creates one worktree per direct child repo under a shared workspace directory
 4. Shortcuts are shown in a dedicated hint line at the very bottom of the popup
 5. A new tmux window opens at the worktree path
 
 Worktrees are created at `../<repo>-worktrees/<branch-name>/` relative to the repo root.
+
+In parent-folder mode, coordinated workspaces are created at `../<parent>-workspaces/<branch-name>/`, with one child worktree per direct child repository.
 
 ## Configuration
 
@@ -72,6 +75,7 @@ set -g @worktree-show-path 'on'            # show PATH column in dashboard (on/o
 - **Dashboard mode**: one popup for open/create/delete actions with keyboard shortcuts
 - **Already checked out**: if the branch already has a worktree, switches to its existing path instead of creating a duplicate
 - **Collision handling**: if a path is already used by a different branch, a numbered suffix (`-2`, `-3`, ...) is tried
+- **Parent-folder mode**: if the current pane is not in a git repo but each direct child repo is its own git root, the plugin creates a coordinated workspace with one worktree per child repo, all using the same branch name
 
 ## License
 
