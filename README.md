@@ -76,6 +76,7 @@ set -g @worktree-show-path 'on'            # show PATH column in dashboard (on/o
 - **Already checked out**: if the branch already has a worktree, switches to its existing path instead of creating a duplicate
 - **Collision handling**: if a path is already used by a different branch, a numbered suffix (`-2`, `-3`, ...) is tried
 - **Parent-folder mode**: if the current pane is not in a git repo but each direct child repo is its own git root, the plugin creates a coordinated workspace with one worktree per child repo, all using the same branch name
+- **Codex setup**: if the source repo contains `.codex/environments/environment.toml` with a `[setup]` `script = '''...'''`, interactive creation asks whether to run it before showing the ignored-files copy picker. The script runs inside the new worktree with `CODEX_SOURCE_TREE_PATH` and `CODEX_WORKTREE_PATH` set
 
 ## License
 

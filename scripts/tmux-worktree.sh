@@ -633,7 +633,7 @@ run_dashboard() {
   local pane_path="$2"
   local current_branch="$3"
   local result action query selected_type selected_name selected_branch selected_path
-  local list_mode copy_files
+  local list_mode
   local git_err confirm base_for_new
 
   if ! has_fzf; then
@@ -722,8 +722,8 @@ run_dashboard() {
           # If the branch ref differs from the name, it's a remote branch —
           # use the remote ref directly as the base (no picker needed).
           if [[ -n "$selected_branch" && "$selected_branch" != "$selected_name" ]]; then
-            copy_files="$(maybe_select_ignored_files "$repo_root" "$selected_name")"
-            run_apply_with_spinner "$selected_name" "$pane_path" "$selected_branch" "$copy_files"
+            prepare_new_worktree_setup "$repo_root" "$selected_name"
+            run_apply_with_spinner "$selected_name" "$pane_path" "$selected_branch" "$WORKTREE_COPY_FILES" "$WORKTREE_USE_CODEX_SETUP"
             return $?
           fi
 
@@ -731,8 +731,8 @@ run_dashboard() {
             continue
           fi
 
-          copy_files="$(maybe_select_ignored_files "$repo_root" "$selected_name")"
-          run_apply_with_spinner "$selected_name" "$pane_path" "$base_for_new" "$copy_files"
+          prepare_new_worktree_setup "$repo_root" "$selected_name"
+          run_apply_with_spinner "$selected_name" "$pane_path" "$base_for_new" "$WORKTREE_COPY_FILES" "$WORKTREE_USE_CODEX_SETUP"
           return $?
         fi
 
@@ -744,8 +744,8 @@ run_dashboard() {
           continue
         fi
 
-        copy_files="$(maybe_select_ignored_files "$repo_root" "$(sanitize_branch_name "$query")")"
-        run_apply_with_spinner "$query" "$pane_path" "$base_for_new" "$copy_files"
+        prepare_new_worktree_setup "$repo_root" "$(sanitize_branch_name "$query")"
+        run_apply_with_spinner "$query" "$pane_path" "$base_for_new" "$WORKTREE_COPY_FILES" "$WORKTREE_USE_CODEX_SETUP"
         return $?
         ;;
       *)
@@ -795,6 +795,7 @@ select_ignored_files() {
   ignored_files="$(list_git_ignored_files "$repo_root")"
 
   if [[ -z "$ignored_files" ]]; then
+    printf "No ignored files to copy.\n" >&2
     printf ""
     return
   fi
@@ -855,6 +856,8 @@ copy_ignored_files_to_worktree() {
     return 0
   fi
 
+  printf "Copying selected ignored files...\n"
+
   while IFS= read -r file; do
     [[ -n "$file" ]] || continue
 
@@ -870,6 +873,93 @@ copy_ignored_files_to_worktree() {
   done <<<"$files_list"
 }
 
+extract_codex_setup_script() {
+  local env_path="$1"
+
+  awk '
+    BEGIN { open = sprintf("%c%c%c", 39, 39, 39) }
+    /^[[:space:]]*\[setup\][[:space:]]*(#.*)?$/ { in_setup = 1; next }
+    /^[[:space:]]*\[[^]]+\]/ { in_setup = 0 }
+    !in_setup { next }
+
+    !in_script && $0 ~ /^[[:space:]]*script[[:space:]]*=/ {
+      line = $0
+      sub(/^[[:space:]]*script[[:space:]]*=[[:space:]]*/, "", line)
+      if (index(line, open) != 1) {
+        next
+      }
+
+      line = substr(line, 4)
+      close_at = index(line, open)
+      if (close_at) {
+        print substr(line, 1, close_at - 1)
+        found = 1
+        exit
+      }
+
+      print line
+      in_script = 1
+      next
+    }
+
+    in_script {
+      close_at = index($0, open)
+      if (close_at) {
+        print substr($0, 1, close_at - 1)
+        found = 1
+        exit
+      }
+
+      print
+    }
+
+    END { if (!found) exit 1 }
+  ' "$env_path"
+}
+
+run_codex_environment_setup() {
+  local repo_root="$1"
+  local worktree_path="$2"
+  local env_path setup_script
+
+  env_path="$repo_root/.codex/environments/environment.toml"
+  if [[ ! -f "$env_path" ]]; then
+    return 0
+  fi
+
+  if ! setup_script="$(extract_codex_setup_script "$env_path")"; then
+    tmux display-message "Codex setup script not found: $env_path" || true
+    return 1
+  fi
+
+  printf "Running Codex environment setup: %s\n" "$env_path"
+  if ! (
+    cd "$worktree_path" && \
+      CODEX_SOURCE_TREE_PATH="$repo_root" \
+      CODEX_WORKTREE_PATH="$worktree_path" \
+      bash -c "$setup_script"
+  ); then
+    tmux display-message "Codex setup failed: $(basename "$worktree_path")" || true
+    return 1
+  fi
+
+  printf "Codex environment setup completed.\n"
+}
+
+has_codex_environment_config() {
+  local repo_root="$1"
+  [[ -f "$repo_root/.codex/environments/environment.toml" ]]
+}
+
+prompt_use_codex_environment_setup() {
+  local repo_root="$1"
+  local env_path confirm
+
+  env_path="$repo_root/.codex/environments/environment.toml"
+  read -r -p "Use Codex environment setup from $env_path? [Y/n]: " confirm
+  [[ -z "$confirm" || "$confirm" =~ ^[Yy]$ ]]
+}
+
 branch_has_worktree() {
   local repo_root="$1"
   local branch_name="$2"
@@ -883,17 +973,28 @@ branch_has_worktree() {
   [[ -n "$wt" ]]
 }
 
-maybe_select_ignored_files() {
+prepare_new_worktree_setup() {
   local repo_root="$1"
   local branch_name="$2"
 
+  WORKTREE_USE_CODEX_SETUP=0
+  WORKTREE_COPY_FILES=""
+
   # Skip if branch already has a worktree (nothing new will be created)
   if branch_exists "$repo_root" "$branch_name" && branch_has_worktree "$repo_root" "$branch_name"; then
-    printf ""
     return
   fi
 
-  select_ignored_files "$repo_root"
+  if has_codex_environment_config "$repo_root"; then
+    if prompt_use_codex_environment_setup "$repo_root"; then
+      WORKTREE_USE_CODEX_SETUP=1
+      return
+    fi
+  else
+    printf "No Codex environment config found; showing ignored-files copy picker.\n" >&2
+  fi
+
+  WORKTREE_COPY_FILES="$(select_ignored_files "$repo_root")"
 }
 
 list_local_branches() {
@@ -1136,9 +1237,11 @@ create_multi_repo_workspace() {
     target_path="$workspace_path/$repo_name"
 
     if [[ -e "$target_path/.git" ]]; then
+      printf "Using existing worktree for %s: %s\n" "$repo_name" "$target_path"
       continue
     fi
 
+    printf "Creating worktree for %s: %s\n" "$repo_name" "$target_path"
     if branch_exists "$repo_root" "$name"; then
       if ! git_err="$(git -C "$repo_root" worktree add "$target_path" "$name" 2>&1)"; then
         show_git_error "$git_err"
@@ -1156,6 +1259,11 @@ create_multi_repo_workspace() {
 
     created_repos+=("$repo_root")
     created_paths+=("$target_path")
+
+    if ! run_codex_environment_setup "$repo_root" "$target_path"; then
+      cleanup_needed=1
+      break
+    fi
   done <<<"$rows"
 
   if [[ "$cleanup_needed" == "1" ]]; then
@@ -1175,34 +1283,17 @@ run_apply_with_spinner() {
   local pane_path="$2"
   local base_branch="${3:-}"
   local copy_files="${4:-}"
-  local pid i frame
-  local frames=("■□□□□" "■■□□□" "■■■□□" "■■■■□" "■■■■■" "□■■■■" "□□■■■" "□□□■■" "□□□□■")
-  local green reset
+  local use_codex_setup="${5:-auto}"
 
-  green='\033[32m'
-  reset='\033[0m'
-
-  "${BASH_SOURCE[0]}" --apply "$name" "$pane_path" "$base_branch" "$copy_files" >/dev/null 2>&1 &
-  pid=$!
-  i=0
-
-  while kill -0 "$pid" 2>/dev/null; do
-    frame="${frames[i%${#frames[@]}]}"
-    printf "\rProcessing worktree '%s'... ${green}[%s]${reset}" "$name" "$frame"
-    sleep 0.1
-    i=$((i + 1))
-  done
-
-  wait "$pid"
-  printf "\r\033[K"
-  return $?
+  printf "Processing worktree '%s'...\n" "$name"
+  "${BASH_SOURCE[0]}" --apply "$name" "$pane_path" "$base_branch" "$copy_files" "$use_codex_setup"
 }
 
 main() {
   local input_name name pane_path repo_root repo_name worktrees_root worktree_path
   local worktree_dir_name candidate_path path_branch path_try
   local existing_branch_worktree
-  local git_err current_branch base_branch copy_files
+  local git_err current_branch base_branch copy_files use_codex_setup
   local selected_row selected_name selected_branch selected_path confirm
   local mode parent_path
 
@@ -1225,6 +1316,7 @@ main() {
     pane_path="${3:-$(tmux display-message -p '#{pane_current_path}')}"
     base_branch="${4:-}"
     copy_files="${5:-}"
+    use_codex_setup="${6:-auto}"
   else
     input_name="${1:-}"
     pane_path="${2:-$(tmux display-message -p '#{pane_current_path}')}"
@@ -1355,8 +1447,8 @@ main() {
       *) exit 1 ;;
     esac
 
-    copy_files="$(maybe_select_ignored_files "$repo_root" "$name")"
-    run_apply_with_spinner "$name" "$pane_path" "$base_branch" "$copy_files"
+    prepare_new_worktree_setup "$repo_root" "$name"
+    run_apply_with_spinner "$name" "$pane_path" "$base_branch" "$WORKTREE_COPY_FILES" "$WORKTREE_USE_CODEX_SETUP"
     exit $?
   fi
 
@@ -1405,15 +1497,22 @@ main() {
       ')"
 
       if [[ -n "$existing_branch_worktree" ]]; then
+        printf "Branch already has a worktree: %s\n" "$existing_branch_worktree"
         worktree_path="$existing_branch_worktree"
-      elif ! git_err="$(git -C "$repo_root" worktree add "$worktree_path" "$name" 2>&1)"; then
-        show_git_error "$git_err"
-        exit 1
       else
+        printf "Creating worktree: %s\n" "$worktree_path"
+        if ! git_err="$(git -C "$repo_root" worktree add "$worktree_path" "$name" 2>&1)"; then
+          show_git_error "$git_err"
+          exit 1
+        fi
+
         copy_ignored_files_to_worktree "$repo_root" "$worktree_path" "${copy_files:-}"
+        if [[ "${use_codex_setup:-auto}" != "0" ]] && ! run_codex_environment_setup "$repo_root" "$worktree_path"; then
+          exit 1
+        fi
       fi
     else
-      if [[ -z "$base_branch" ]]; then
+      if [[ -z "${base_branch:-}" ]]; then
         base_branch="$current_branch"
       fi
 
@@ -1428,12 +1527,16 @@ main() {
         exit 1
       fi
 
+      printf "Creating worktree: %s from %s\n" "$worktree_path" "$base_branch"
       if ! git_err="$(git -C "$repo_root" worktree add -b "$name" "$worktree_path" "$base_branch" 2>&1)"; then
         show_git_error "$git_err"
         exit 1
       fi
 
       copy_ignored_files_to_worktree "$repo_root" "$worktree_path" "${copy_files:-}"
+      if [[ "${use_codex_setup:-auto}" != "0" ]] && ! run_codex_environment_setup "$repo_root" "$worktree_path"; then
+        exit 1
+      fi
     fi
   fi
 
